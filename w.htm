@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Мини Wolfenstein 3D + Эмулятор 8086</title>
+    <style>
+        body { font-family: monospace; background: #111; color: #d4d4d4; padding: 15px; margin: 0; }
+        h1 { color: #ff4500; font-size: 20px; text-align: center; margin-bottom: 10px; }
+        .game-layout { display: flex; flex-direction: row; gap: 15px; justify-content: center; flex-wrap: wrap; }
+        .panel { background: #222; padding: 15px; border-radius: 5px; border: 2px solid #333; width: 420px; box-sizing: border-box; }
+        canvas { background: #000; border: 2px solid #555; display: block; margin: 0 auto; width: 400px; height: 300px; }
+        textarea { width: 100%; height: 140px; background: #1e1e1e; color: #9cdcfe; border: 1px solid #444; padding: 8px; font-family: monospace; resize: none; box-sizing: border-box; }
+        button { background: #ff4500; color: white; border: none; padding: 10px 15px; cursor: pointer; font-weight: bold; width: 100%; border-radius: 3px; margin-top: 5px; }
+        button:hover { background: #ff6347; }
+        .registers { display: grid; grid-template-columns: repeat(2, 1fr); gap: 5px; margin-top: 10px; font-size: 12px; }
+        .reg-box { background: #333; padding: 5px; border-radius: 3px; border-left: 3px solid #ff4500; }
+        .log { background: #151515; color: #ce9178; padding: 8px; height: 80px; overflow-y: auto; margin-top: 10px; border: 1px solid #444; font-size: 11px; }
+        .controls-hint { text-align: center; color: #888; font-size: 12px; margin-top: 8px; }
+        span.val { color: #b5cea8; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+    <h1>🐺 Wolf3D Raycaster + Intel 8086 Emulator</h1>
+    
+    <div class="game-layout">
+        <!-- 3D Экран Игры -->
+        <div class="panel">
+            <h3>3D Вид (Движок Wolf3D)</h3>
+            <canvas id="screen" width="400" height="300"></canvas>
+            <div class="controls-hint">Управление: Стрелочки или W, A, S, D на клавиатуре</div>
+        </div>
+
+        <!-- Контроллер Ассемблера -->
+        <div class="panel">
+            <h3>Редактор Ассемблера (Настройка стен)</h3>
+            <textarea id="code">
+MOV AX, 120   ; Смена цвета стен (Попробуй 50 или 200!)
+MOV BX, 1     ; Включить режим стен (1 - вкл, 0 - выкл)
+ADD AX, BX
+            </textarea>
+            <button onclick="runCode()">⚙️ Применить код к процессору</button>
+            
+            <div class="registers">
+                <div class="reg-box">AX (Цвет): <span id="reg_ax" class="val">0000</span></div>
+                <div class="reg-box">BX (Режим): <span id="reg_bx" class="val">0000</span></div>
+                <div class="reg-box">CX: <span id="reg_cx" class="val">0000</span></div>
+                <div class="reg-box">DX: <span id="reg_dx" class="val">0000</span></div>
+            </div>
+            
+            <div id="log" class="log">Процессор ожидает прошивку...</div>
+        </div>
+    </div>
+
+    <script>
+        // --- 1. ЭМУЛЯТОР ПРОЦЕССОРА 8086 ---
+        const cpu = { ax: 120, bx: 1, cx: 0, dx: 0, ip: 0 };
+        let wallColorHue = 120; // Цвет стен по умолчанию (из AX)
+
+        function updateUI() {
+            document.getElementById('reg_ax').innerText = cpu.ax.toString(16).toUpperCase().padStart(4, '0');
+            document.getElementById('reg_bx').innerText = cpu.bx.toString(16).toUpperCase().padStart(4, '0');
+            document.getElementById('reg_cx').innerText = cpu.cx.toString(16).toUpperCase().padStart(4, '0');
+            document.getElementById('reg_dx').innerText = cpu.dx.toString(16).toUpperCase().padStart(4, '0');
+        }
+
+        function runCode() {
+            const code = document.getElementById('code').value;
+            const lines = code.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+            cpu.ax = 0; cpu.bx = 0; cpu.cx = 0; cpu.dx = 0;
+            const log = document.getElementById('log');
+            log.innerHTML = "<b>Компиляция ASM...</b><br>";
+
+            for (let line of lines) {
+                let clean = line.split(';')[0].replace(/,/g, ' ').replace(/\s+/g, ' ').trim();
+                let tokens = clean.split(' ');
+                if (tokens.length < 2) continue;
+
+                let cmd = tokens[0].toUpperCase();
+                let dest = tokens[1].toLowerCase();
+                let src = tokens[2] ? tokens[2].toLowerCase() : null;
+
+                if (!cpu.hasOwnProperty(dest)) continue;
+                let srcVal = cpu.hasOwnProperty(src) ? cpu[src] : (parseInt(src, 10) || 0);
+
+                if (cmd === 'MOV') cpu[dest] = srcVal;
+                else if (cmd === 'ADD') cpu[dest] += srcVal;
+                else if (cmd === 'SUB') cpu[dest] -= srcVal;
+                
+                cpu[dest] = (cpu[dest] + 65536) % 65536;
+            }
+            wallColorHue = cpu.ax % 360; // Передаем значение регистра AX в графический движок!
+            log.innerHTML += `✔️ Прошивка успешна! Цвет стен установлен в HUE: ${wallColorHue}`;
+            updateUI();
+        }
+
+        // --- 2. 3D RAYCASTING ДВИЖОК (WOLF3D НА МИНИМАЛКАХ) ---
+        const canvas = document.getElementById("screen");
+        const ctx = canvas.getContext("2d");
+
+        // Карта лабиринта (1 - стена, 0 - пусто)
+        const map = [,
+ ,
+ ,
+ ,
+ ,
+ ,
+ ,
+            [1,1,1,1,1,1,1,1]
+        ];
+        const mapSize = 8;
+
+        // Игрок
+        let player = { x: 2.5, y: 2.5, angle: 0, speed: 0, rotSpeed: 0 };
+        const keys = {};
+
+        // Отслеживание клавиатуры
+        window.addEventListener('keydown', e => keys[e.code] = true);
+        window.addEventListener('keyup', e => keys[e.code] = false);
+
+        function updatePlayer() {
+            player.rotSpeed = 0;
+            player.speed = 0;
+            if (keys['ArrowLeft'] || keys['KeyA']) player.rotSpeed = -0.04;
+            if (keys['ArrowRight'] || keys['KeyD']) player.rotSpeed = 0.04;
+            if (keys['ArrowUp'] || keys['KeyW']) player.speed = 0.05;
+            if (keys['ArrowDown'] || keys['KeyS']) player.speed = -0.05;
+
+            player.angle += player.rotSpeed;
+            let newX = player.x + Math.cos(player.angle) * player.speed;
+            let newY = player.y + Math.sin(player.angle) * player.speed;
+
+            // Коллизии со стенами
+            if (map[Math.floor(newY)][Math.floor(newX)] === 0) {
+                player.x = newX;
+                player.y = newY;
+            }
+        }
+
+        function render3D() {
+            // Очистка экрана (Небо и пол)
+            ctx.fillStyle = "#222"; ctx.fillRect(0, 0, 400, 150); // Потолок
+            ctx.fillStyle = "#444"; ctx.fillRect(0, 150, 400, 150); // Пол
+
+            const fov = Math.PI / 3; // Угол обзора (60 градусов)
+            const numRays = 400;     // Количество лучей на ширину экрана
+            const halfFov = fov / 2;
+
+            for (let i = 0; i < numRays; i++) {
+                // Вычисляем угол конкретного луча
+                let rayAngle = player.angle - halfFov + (i / numRays) * fov;
+                let distance = 0;
+                let hitWall = false;
+
+                let cos = Math.cos(rayAngle);
+                let sin = Math.sin(rayAngle);
+
+                // Бросаем луч (DDA алгоритм упрощенный)
+                while (!hitWall && distance < 16) {
+                    distance += 0.05;
+                    let checkX = Math.floor(player.x + cos * distance);
+                    let checkY = Math.floor(player.y + sin * distance);
+
+                    if (checkX < 0 || checkX >= mapSize || checkY < 0 || checkY >= mapSize) {
+                        hitWall = true;
+                        distance = 16;
+                    } else if (map[checkY][checkX] > 0) {
+                        hitWall = true;
+                    }
+                }
+
+                // Убираем эффект «рыбьего глаза»
+                let correctedDist = distance * Math.cos(rayAngle - player.angle);
+                let wallHeight = Math.min(300, (300 / correctedDist));
+
+                // Рассчитываем тень в зависимости от расстояния
+                let brightness = Math.max(10, 100 - (correctedDist * 8));
+
+                // Рисуем вертикальную полоску стены
+                // Цвет HUE берется напрямую из регистра процессора AX!
+                ctx.strokeStyle = `hsl(${wallColorHue}, 80%, ${brightness / 1.5}%)`;
+                ctx.beginPath();
+                ctx.moveTo(i, 150 - wallHeight / 2);
+                ctx.lineTo(i, 150 + wallHeight / 2);
+                ctx.stroke();
+            }
+        }
+
+        function gameLoop() {
+            updatePlayer();
+            render3D();
+            requestAnimationFrame(gameLoop);
+        }
+
+        // Запуск
+        updateUI();
+        runCode();
+        gameLoop();
+    </script>
+</body>
+</html>
